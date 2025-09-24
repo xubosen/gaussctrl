@@ -68,7 +68,7 @@ class GaussCtrlModel(SplatfactoModel):
             print("Called get_outputs with not a camera")
             return {}
         assert camera.shape[0] == 1, "Only one camera at a time"
-        
+
         # get the background color
         if self.training:
             if self.config.background_color == "random":
@@ -137,13 +137,14 @@ class GaussCtrlModel(SplatfactoModel):
 
         colors_crop = torch.cat((features_dc_crop[:, None, :], features_rest_crop), dim=1)
 
-        self.xys, depths, self.radii, conics, num_tiles_hit, cov3d = project_gaussians(  # type: ignore
-            means_crop,
-            torch.exp(scales_crop),
+        self.xys, depths, self.radii, conics, num_tiles_hit, cov3d = project_gaussians(
+            # type: ignore
+            means_crop.float(),
+            torch.exp(scales_crop.float()),
             1,
-            quats_crop / quats_crop.norm(dim=-1, keepdim=True),
-            viewmat.squeeze()[:3, :],
-            projmat.squeeze() @ viewmat.squeeze(),
+            (quats_crop / quats_crop.norm(dim=-1, keepdim=True)).float(),
+            viewmat.squeeze()[:3, :].float(),
+            (projmat.squeeze() @ viewmat.squeeze()).float(),
             camera.fx.item(),
             camera.fy.item(),
             cx,
@@ -152,6 +153,7 @@ class GaussCtrlModel(SplatfactoModel):
             W,
             tile_bounds,
         )  # type: ignore
+
         if (self.radii).sum() == 0:
             return {"rgb": background.repeat(int(camera.height.item()), int(camera.width.item()), 1)}
 
