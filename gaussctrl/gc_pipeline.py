@@ -165,7 +165,7 @@ class GaussCtrlPipeline(VanillaPipeline):
                 langsam_obj = self.config.langsam_obj
                 results = self.langsam.predict([langsam_rgb_pil], [langsam_obj])
                 masks = results[0]["masks"]
-                CONSOLE.print({f"Mask shape: {masks.shape}"} , style="bold blue")
+                CONSOLE.print({f"Mask shape: {masks.shape}"}, style="bold blue")
                 # masks, _, _, _ = self.langsam.predict(langsam_rgb_pil, langsam_obj)
                 # mask_npy = masks.clone().cpu().numpy()[0] * 1
 
@@ -175,7 +175,7 @@ class GaussCtrlPipeline(VanillaPipeline):
                 mask_filename = os.path.join(debug_dir, f'cam_{cam_idx:03d}_langsam_mask.png')
                 mask_pil.save(mask_filename)
 
-                self.update_datasets(cam_idx, rendered_rgb.cpu(), rendered_depth, latent, mask_npy)
+                self.update_datasets(cam_idx, rendered_rgb.cpu(), rendered_depth, latent, masks)
             else:
                 self.update_datasets(cam_idx, rendered_rgb.cpu(), rendered_depth, latent, None)
 
