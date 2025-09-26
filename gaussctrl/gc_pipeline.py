@@ -170,7 +170,8 @@ class GaussCtrlPipeline(VanillaPipeline):
                                                [langsam_obj])
                 masks = results[0]["masks"]
                 if len(masks) == 0:
-                    raise ValueError("No masks found by LangSAM")
+                    combined_mask = np.zeros_like(rendered_rgb.cpu().numpy())
+                    CONSOLE.print("No mask found", style="bold blue")
                 else:
                     combined_mask = np.logical_or.reduce(masks).astype(np.uint8)
 
