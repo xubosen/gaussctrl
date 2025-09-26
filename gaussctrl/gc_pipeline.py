@@ -150,6 +150,7 @@ class GaussCtrlPipeline(VanillaPipeline):
 
             # LangSAM is optional
             if self.config.langsam_obj != "":
+                CONSOLE.print("Running LangSAM", style="bold blue")
                 # Save the image sent to LangSAM under the debug folder
                 debug_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'debug')
                 os.makedirs(debug_dir, exist_ok=True)
