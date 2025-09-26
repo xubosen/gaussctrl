@@ -247,6 +247,16 @@ class GaussCtrlPipeline(VanillaPipeline):
                     unedited_image = unedited_images[local_idx].permute(2,0,1)
                     bg_cntrl_edited_image = edited_image * mask[None] + unedited_image * bg_mask[None]
 
+                # Save the diffusion edited image under the debug folder
+                debug_dir = os.path.join(
+                    os.path.dirname(os.path.dirname(__file__)), 'debug')
+                os.makedirs(debug_dir, exist_ok=True)
+                edited_img_np = (bg_cntrl_edited_image.permute(1,2,0).cpu().numpy() * 255).astype(np.uint8)
+                edited_img_pil = Image.fromarray(edited_img_np)
+                edited_img_filename = os.path.join(debug_dir, f'img_{global_idx:03d}_diffusion_edited.png')
+                edited_img_pil.save(edited_img_filename)
+
+                # Update the edited image back to train data
                 self.datamanager.train_data[global_idx]["image"] = bg_cntrl_edited_image.permute(1,2,0).to(torch.float32) # [512 512 3]
         print("#############################")
         CONSOLE.print("Done Editing", style="bold yellow")
