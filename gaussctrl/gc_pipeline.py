@@ -98,8 +98,11 @@ class GaussCtrlPipeline(VanillaPipeline):
         self.ddim_scheduler = DDIMScheduler.from_pretrained(self.config.diffusion_ckpt, subfolder="scheduler")
         self.ddim_inverser = DDIMInverseScheduler.from_pretrained(self.config.diffusion_ckpt, subfolder="scheduler")
 
-        controlnet = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-depth")
-        self.pipe = StableDiffusionControlNetPipeline.from_pretrained(self.config.diffusion_ckpt, controlnet=controlnet).to(self.device).to(torch.float16)
+        # controlnet = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-depth")
+        controlnet = None
+        self.pipe = StableDiffusionControlNetPipeline.from_pretrained(self.config.diffusion_ckpt,
+                                                                      controlnet=controlnet
+                                                                      ).to(self.device).to(torch.float16)
         self.pipe.to(self.pipe_device)
 
         added_prompt = 'best quality, extremely detailed'
@@ -138,7 +141,7 @@ class GaussCtrlPipeline(VanillaPipeline):
 
             # reverse the images to noises
             self.pipe.unet.set_attn_processor(processor=AttnProcessor())
-            self.pipe.controlnet.set_attn_processor(processor=AttnProcessor())
+            # self.pipe.controlnet.set_attn_processor(processor=AttnProcessor())
             init_latent = self.image2latent(rendered_rgb)
             disparity = self.depth2disparity_torch(rendered_depth[:,:,0][None])
 
@@ -146,7 +149,11 @@ class GaussCtrlPipeline(VanillaPipeline):
             latent, _ = self.pipe(prompt=self.positive_reverse_prompt, #  placeholder here, since cfg=0
                                 num_inference_steps=self.num_inference_steps,
                                 latents=init_latent,
-                                image=disparity, return_dict=False, guidance_scale=0, output_type='latent')
+                                image=None, return_dict=False, guidance_scale=0, output_type='latent')
+            # latent, _ = self.pipe(prompt=self.positive_reverse_prompt, #  placeholder here, since cfg=0
+            #                     num_inference_steps=self.num_inference_steps,
+            #                     latents=init_latent,
+            #                     image=disparity, return_dict=False, guidance_scale=0, output_type='latent')
 
             # LangSAM is optional
             if self.config.langsam_obj != "":
@@ -175,6 +182,7 @@ class GaussCtrlPipeline(VanillaPipeline):
                     masks_np = masks.detach().cpu().numpy()
                 else:
                     masks_np = np.asarray(masks)
+
                 if masks_np.size == 0:
                     # Skip this view if no mask found (return an empty mask)
                     CONSOLE.print("No mask found", style="bold blue")
@@ -206,9 +214,9 @@ class GaussCtrlPipeline(VanillaPipeline):
         self.pipe.unet.set_attn_processor(
                         processor=utils.CrossViewAttnProcessor(self_attn_coeff=0.6,
                         unet_chunk_size=2))
-        self.pipe.controlnet.set_attn_processor(
-                        processor=utils.CrossViewAttnProcessor(self_attn_coeff=0,
-                        unet_chunk_size=2))
+        # self.pipe.controlnet.set_attn_processor(
+        #                 processor=utils.CrossViewAttnProcessor(self_attn_coeff=0,
+        #                 unet_chunk_size=2))
         CONSOLE.print("Done Resetting Attention Processor", style="bold blue")
 
         print("#############################")
@@ -254,13 +262,24 @@ class GaussCtrlPipeline(VanillaPipeline):
                                 prompt=[self.positive_prompt] * (self.num_ref_views+len(chunked_data)),
                                 negative_prompt=[self.negative_prompts] * (self.num_ref_views+len(chunked_data)),
                                 latents=latents_chunk,
-                                image=disp_ctrl_chunk,
+                                image=None,
                                 num_inference_steps=self.num_inference_steps,
                                 guidance_scale=self.guidance_scale,
                                 controlnet_conditioning_scale=self.controlnet_conditioning_scale,
                                 eta=self.eta,
                                 output_type='pt',
                             ).images[self.num_ref_views:]
+            # chunk_edited = self.pipe(
+            #                     prompt=[self.positive_prompt] * (self.num_ref_views+len(chunked_data)),
+            #                     negative_prompt=[self.negative_prompts] * (self.num_ref_views+len(chunked_data)),
+            #                     latents=latents_chunk,
+            #                     image=disp_ctrl_chunk,
+            #                     num_inference_steps=self.num_inference_steps,
+            #                     guidance_scale=self.guidance_scale,
+            #                     controlnet_conditioning_scale=self.controlnet_conditioning_scale,
+            #                     eta=self.eta,
+            #                     output_type='pt',
+            #                 ).images[self.num_ref_views:]
             chunk_edited = chunk_edited.cpu()
 
             # Insert edited images back to train data for training
