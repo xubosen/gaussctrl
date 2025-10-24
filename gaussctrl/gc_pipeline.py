@@ -40,7 +40,7 @@ from nerfstudio.viewer_legacy.server.utils import three_js_perspective_camera_fo
 from nerfstudio.cameras.cameras import Cameras, CameraType
 from nerfstudio.utils import colormaps
 
-from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, UNet2DConditionModel
+from diffusers import StableDiffusionImg2ImgPipeline, ControlNetModel, UNet2DConditionModel
 from diffusers.schedulers import DDIMScheduler, DDIMInverseScheduler
 
 CONSOLE = Console(width=120)
@@ -98,8 +98,7 @@ class GaussCtrlPipeline(VanillaPipeline):
         self.ddim_scheduler = DDIMScheduler.from_pretrained(self.config.diffusion_ckpt, subfolder="scheduler")
         self.ddim_inverser = DDIMInverseScheduler.from_pretrained(self.config.diffusion_ckpt, subfolder="scheduler")
 
-        controlnet = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-depth")
-        self.pipe = StableDiffusionControlNetPipeline.from_pretrained(self.config.diffusion_ckpt, controlnet=controlnet).to(self.device).to(torch.float16)
+        self.pipe = StableDiffusionImg2ImgPipeline.from_pretrained(self.config.diffusion_ckpt).to(self.device).to(torch.float16)
         self.pipe.to(self.pipe_device)
 
         added_prompt = 'best quality, extremely detailed'
@@ -121,83 +120,36 @@ class GaussCtrlPipeline(VanillaPipeline):
         self.chunk_size = self.config.chunk_size
 
     def render_reverse(self):
-        '''Render rgb, depth and reverse rgb images back to latents'''
+        '''Render rgb, depth and generate mask'''  # Simplified description
         for cam_idx in range(len(self.datamanager.cameras)):
-            CONSOLE.print(f"Rendering view {cam_idx}", style="bold yellow")
+            CONSOLE.print(f"Rendering view {cam_idx} for data preparation",
+                          style="bold yellow")  # Modified print statement
             current_cam = self.datamanager.cameras[cam_idx].to(self.device)
             if current_cam.metadata is None:
                 current_cam.metadata = {}
             current_cam.metadata["cam_idx"] = cam_idx
             rendered_image = self._model.get_outputs_for_camera(current_cam)
 
-            rendered_rgb = rendered_image['rgb'].to(torch.float16) # [512 512 3] 0-1
-            rendered_depth = rendered_image['depth'].to(torch.float16) # [512 512 1]
+            rendered_rgb = rendered_image['rgb'].to(
+                torch.float16)  # [512 512 3] 0-1
 
-            CONSOLE.print(f"Shape of rendered rgb: {rendered_rgb.shape}, "
-                          f"depth: {rendered_depth.shape}", style="bold blue")
+            rendered_depth = rendered_image['depth'].to(
+                torch.float16)  # [512 512 1]
 
-            # reverse the images to noises
-            self.pipe.unet.set_attn_processor(processor=AttnProcessor())
-            self.pipe.controlnet.set_attn_processor(processor=AttnProcessor())
-            init_latent = self.image2latent(rendered_rgb)
-            disparity = self.depth2disparity_torch(rendered_depth[:,:,0][None])
-
-            self.pipe.scheduler = self.ddim_inverser
-            latent, _ = self.pipe(prompt=self.positive_reverse_prompt, #  placeholder here, since cfg=0
-                                num_inference_steps=self.num_inference_steps,
-                                latents=init_latent,
-                                image=disparity, return_dict=False, guidance_scale=0, output_type='latent')
-
-            # LangSAM is optional
+            mask_npy = None  # Initialize mask_npy to None
+            # LangSAM mask generation remains the same
             if self.config.langsam_obj != "":
-                CONSOLE.print("Running LangSAM", style="bold blue")
-                # Convert the rendered rgb to PIL image
+                langsam_obj = self.config.langsam_obj
                 langsam_rgb_pil = Image.fromarray(
                     (rendered_rgb.cpu().numpy() * 255).astype(np.uint8))
+                masks, _, _, _ = self.langsam.predict(langsam_rgb_pil,
+                                                      langsam_obj)
+                mask_npy = masks.clone().cpu().numpy()[0] * 1
 
-                # Save the image sent to LangSAM under the debug folder
-                debug_dir = os.path.join(
-                    os.path.dirname(os.path.dirname(__file__)),
-                    'debug')
-                os.makedirs(debug_dir, exist_ok=True)
-                rgb_filename = os.path.join(debug_dir, f'cam_{cam_idx:03d}_'
-                                                       f'langsam_input.png')
-                langsam_rgb_pil.save(rgb_filename)
-
-                # Call LangSAM to get masks
-                langsam_obj = self.config.langsam_obj
-                results = self.langsam.predict([langsam_rgb_pil],
-                                               [langsam_obj])
-                masks = results[0]["masks"]
-
-                # Normalize masks to numpy and combine
-                if isinstance(masks, torch.Tensor):
-                    masks_np = masks.detach().cpu().numpy()
-                else:
-                    masks_np = np.asarray(masks)
-                if masks_np.size == 0:
-                    # Skip this view if no mask found (return an empty mask)
-                    CONSOLE.print("No mask found", style="bold blue")
-                    combined_mask = np.zeros((rendered_rgb.shape[0],
-                                              rendered_rgb.shape[1]),
-                                             dtype=np.uint8)
-                else:
-                    # masks_np expected shape (N, H, W) or list of (H, W)
-                    combined_mask = np.any(masks_np, axis=0).astype(np.uint8)
-
-                # Save the masks generated by LangSAM under the debug folder
-                mask_img = Image.fromarray(
-                    (combined_mask * 255).astype(np.uint8))
-                mask_filename = os.path.join(debug_dir,
-                                             f'cam_{cam_idx:03d}_langsam_mask'
-                                             f'.png')
-                mask_img.save(mask_filename)
-
-                self.update_datasets(cam_idx, rendered_rgb.cpu(),
-                                     rendered_depth, latent, combined_mask)
-            else:
-                self.update_datasets(cam_idx, rendered_rgb.cpu(),
-                                     rendered_depth, latent, None)
+            # Update dataset - Pass None for the latent argument
+            self.update_datasets(cam_idx, rendered_rgb.cpu(),
+                                 rendered_depth, None,
+                                 mask_npy)
 
     def edit_images(self):
         '''Edit images with ControlNet and AttnAlign'''
@@ -216,18 +168,13 @@ class GaussCtrlPipeline(VanillaPipeline):
         CONSOLE.print(f"Reference views are {[j+1 for j in self.ref_indices]}", style="bold yellow")
         print("#############################")
         ref_disparity_list = []
-        ref_z0_list = []
         for ref_idx in self.ref_indices:
             ref_data = deepcopy(self.datamanager.train_data[ref_idx])
             ref_disparity = self.depth2disparity(ref_data['depth_image'])
-            ref_z0 = ref_data['z_0_image']
             ref_disparity_list.append(ref_disparity)
-            ref_z0_list.append(ref_z0)
 
         ref_disparities = np.concatenate(ref_disparity_list, axis=0)
-        ref_z0s = np.concatenate(ref_z0_list, axis=0)
         ref_disparity_torch = torch.from_numpy(ref_disparities.copy()).to(torch.float16).to(self.pipe_device)
-        ref_z0_torch = torch.from_numpy(ref_z0s.copy()).to(torch.float16).to(self.pipe_device)
 
         # Edit images in chunk
         for idx in range(0, len(self.datamanager.train_data), self.chunk_size):
@@ -243,24 +190,36 @@ class GaussCtrlPipeline(VanillaPipeline):
             disparities = np.concatenate(depth_images, axis=0)
             disparities_torch = torch.from_numpy(disparities.copy()).to(torch.float16).to(self.pipe_device)
 
-            z_0_images = [current_data['z_0_image'] for current_data in chunked_data] # list of np array
-            z0s = np.concatenate(z_0_images, axis=0)
-            latents_torch = torch.from_numpy(z0s.copy()).to(torch.float16).to(self.pipe_device)
+            # --- Prepare original images for the batch ---
+            # Retrieve the original RGB images rendered in render_reverse
+            ref_original_rgb_list = [
+                self.datamanager.train_data[ref_idx]['unedited_image'] for
+                ref_idx in self.ref_indices]
+            chunk_original_rgb_list = [current_data['unedited_image'] for
+                                       current_data in chunked_data]
 
-            disp_ctrl_chunk = torch.concatenate((ref_disparity_torch, disparities_torch), dim=0)
-            latents_chunk = torch.concatenate((ref_z0_torch, latents_torch), dim=0)
+            # Combine reference and chunk images (ensure they are in the
+            # correct format, e.g., PIL Images or Tensors 0-1)
+            # Assuming 'unedited_image' is stored as a Tensor [H, W, C] 0-1
+            image_batch_list = [img.permute(2, 0, 1) for img in
+                                ref_original_rgb_list + chunk_original_rgb_list]  # Convert to [C, H, W]
+            image_batch = torch.stack(image_batch_list).to(torch.float16).to(
+                self.pipe_device)  # Create batch [N, C, H, W]
+
+            # Define how much noise to add (0 = no change, 1 = max change)
+            strength = 0.75  # Example: Adjust this value (0.5-0.9 are common)
 
             chunk_edited = self.pipe(
-                                prompt=[self.positive_prompt] * (self.num_ref_views+len(chunked_data)),
-                                negative_prompt=[self.negative_prompts] * (self.num_ref_views+len(chunked_data)),
-                                latents=latents_chunk,
-                                image=disp_ctrl_chunk,
-                                num_inference_steps=self.num_inference_steps,
-                                guidance_scale=self.guidance_scale,
-                                controlnet_conditioning_scale=self.controlnet_conditioning_scale,
-                                eta=self.eta,
-                                output_type='pt',
-                            ).images[self.num_ref_views:]
+                prompt=[self.positive_prompt] * len(image_batch),
+                negative_prompt=[self.negative_prompts] * len(image_batch),
+                image=image_batch,  # Pass the original RGB batch
+                strength=strength,  # Control noise level/edit strength
+                num_inference_steps=self.num_inference_steps,
+                guidance_scale=self.guidance_scale,
+                # latents=... # Typically not provided when strength < 1.0
+                output_type='pt',
+            ).images[self.num_ref_views:]
+            #
             chunk_edited = chunk_edited.cpu()
 
             # Insert edited images back to train data for training
@@ -325,11 +284,11 @@ class GaussCtrlPipeline(VanillaPipeline):
         disparity_map = torch.concatenate([disparity_map, disparity_map, disparity_map], dim=0)
         return disparity_map[None]
 
-    def update_datasets(self, cam_idx, unedited_image, depth, latent, mask):
+    def update_datasets(self, cam_idx, unedited_image, depth, latent,
+                        mask):
         """Save mid results"""
         self.datamanager.train_data[cam_idx]["unedited_image"] = unedited_image
-        self.datamanager.train_data[cam_idx]["depth_image"] = depth.permute(2,0,1).cpu().to(torch.float32).numpy()
-        self.datamanager.train_data[cam_idx]["z_0_image"] = latent.cpu().to(torch.float32).numpy()
+        self.datamanager.train_data[cam_idx]["depth_image"] = depth.permute(2, 0, 1).cpu().to(torch.float32).numpy()
         if mask is not None:
             self.datamanager.train_data[cam_idx]["mask_image"] = mask
 
