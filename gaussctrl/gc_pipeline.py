@@ -28,7 +28,8 @@ from lang_sam import LangSAM
 import torch, random
 from torch.cuda.amp.grad_scaler import GradScaler
 from typing_extensions import Literal
-from nerfstudio.pipelines.base_pipeline import VanillaPipeline, VanillaPipelineConfig
+from nerfstudio.pipelines.base_pipeline import VanillaPipeline, \
+    VanillaPipelineConfig
 from nerfstudio.viewer.server.viewer_elements import ViewerNumber, ViewerText
 from diffusers.schedulers import DDIMScheduler, DDIMInverseScheduler
 from gaussctrl.gc_datamanager import (
@@ -36,14 +37,18 @@ from gaussctrl.gc_datamanager import (
 )
 from diffusers.models.attention_processor import AttnProcessor
 from gaussctrl import utils
-from nerfstudio.viewer_legacy.server.utils import three_js_perspective_camera_focal_length
+from nerfstudio.viewer_legacy.server.utils import \
+    three_js_perspective_camera_focal_length
 from nerfstudio.cameras.cameras import Cameras, CameraType
 from nerfstudio.utils import colormaps
 
-from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, UNet2DConditionModel
+# from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, UNet2DConditionModel
+from diffusers import StableDiffusionPipeline, ControlNetModel, \
+    UNet2DConditionModel
 from diffusers.schedulers import DDIMScheduler, DDIMInverseScheduler
 
 CONSOLE = Console(width=120)
+
 
 @dataclass
 class GaussCtrlPipelineConfig(VanillaPipelineConfig):
@@ -80,13 +85,13 @@ class GaussCtrlPipeline(VanillaPipeline):
     config: GaussCtrlPipelineConfig
 
     def __init__(
-        self,
-        config: GaussCtrlPipelineConfig,
-        device: str,
-        test_mode: Literal["test", "val", "inference"] = "val",
-        world_size: int = 1,
-        local_rank: int = 0,
-        grad_scaler: Optional[GradScaler] = None,
+            self,
+            config: GaussCtrlPipelineConfig,
+            device: str,
+            test_mode: Literal["test", "val", "inference"] = "val",
+            world_size: int = 1,
+            local_rank: int = 0,
+            grad_scaler: Optional[GradScaler] = None,
     ):
         super().__init__(config, device, test_mode, world_size, local_rank)
         self.test_mode = test_mode
@@ -95,14 +100,17 @@ class GaussCtrlPipeline(VanillaPipeline):
         self.edit_prompt = self.config.edit_prompt
         self.reverse_prompt = self.config.reverse_prompt
         self.pipe_device = 'cuda:0'
-        self.ddim_scheduler = DDIMScheduler.from_pretrained(self.config.diffusion_ckpt, subfolder="scheduler")
-        self.ddim_inverser = DDIMInverseScheduler.from_pretrained(self.config.diffusion_ckpt, subfolder="scheduler")
+        self.ddim_scheduler = DDIMScheduler.from_pretrained(
+            self.config.diffusion_ckpt, subfolder="scheduler")
+        self.ddim_inverser = DDIMInverseScheduler.from_pretrained(
+            self.config.diffusion_ckpt, subfolder="scheduler")
 
         # controlnet = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-depth")
-        controlnet = None
-        self.pipe = StableDiffusionControlNetPipeline.from_pretrained(self.config.diffusion_ckpt,
-                                                                      controlnet=controlnet
-                                                                      ).to(self.device).to(torch.float16)
+        # self.pipe = StableDiffusionControlNetPipeline.from_pretrained(self.config.diffusion_ckpt,
+        #                                                               controlnet=controlnet
+        #                                                               ).to(self.device).to(torch.float16)
+        self.pipe = StableDiffusionPipeline.from_pretrained(
+            self.config.diffusion_ckpt).to(self.device).to(torch.float16)
         self.pipe.to(self.pipe_device)
 
         added_prompt = 'best quality, extremely detailed'
@@ -111,10 +119,12 @@ class GaussCtrlPipeline(VanillaPipeline):
         self.negative_prompts = 'longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality'
 
         view_num = len(self.datamanager.cameras)
-        anchors = [(view_num * i) // self.config.ref_view_num for i in range(self.config.ref_view_num)] + [view_num]
+        anchors = [(view_num * i) // self.config.ref_view_num for i in
+                   range(self.config.ref_view_num)] + [view_num]
 
         random.seed(13789)
-        self.ref_indices = [random.randint(anchor, anchors[idx+1]) for idx, anchor in enumerate(anchors[:-1])]
+        self.ref_indices = [random.randint(anchor, anchors[idx + 1]) for
+                            idx, anchor in enumerate(anchors[:-1])]
         self.num_ref_views = len(self.ref_indices)
 
         self.num_inference_steps = self.config.num_inference_steps
@@ -133,8 +143,10 @@ class GaussCtrlPipeline(VanillaPipeline):
             current_cam.metadata["cam_idx"] = cam_idx
             rendered_image = self._model.get_outputs_for_camera(current_cam)
 
-            rendered_rgb = rendered_image['rgb'].to(torch.float16) # [512 512 3] 0-1
-            rendered_depth = rendered_image['depth'].to(torch.float16) # [512 512 1]
+            rendered_rgb = rendered_image['rgb'].to(
+                torch.float16)  # [512 512 3] 0-1
+            rendered_depth = rendered_image['depth'].to(
+                torch.float16)  # [512 512 1]
 
             CONSOLE.print(f"Shape of rendered rgb: {rendered_rgb.shape}, "
                           f"depth: {rendered_depth.shape}", style="bold blue")
@@ -143,13 +155,18 @@ class GaussCtrlPipeline(VanillaPipeline):
             self.pipe.unet.set_attn_processor(processor=AttnProcessor())
             # self.pipe.controlnet.set_attn_processor(processor=AttnProcessor())
             init_latent = self.image2latent(rendered_rgb)
-            disparity = self.depth2disparity_torch(rendered_depth[:,:,0][None])
+            disparity = self.depth2disparity_torch(
+                rendered_depth[:, :, 0][None])
 
             self.pipe.scheduler = self.ddim_inverser
-            latent, _ = self.pipe(prompt=self.positive_reverse_prompt, #  placeholder here, since cfg=0
-                                num_inference_steps=self.num_inference_steps,
-                                latents=init_latent,
-                                image=None, return_dict=False, guidance_scale=0, output_type='latent')
+            latent, _ = self.pipe(prompt=self.positive_reverse_prompt,
+                                  num_inference_steps=self.num_inference_steps,
+                                  latents=init_latent,
+                                  image=None,
+                                  return_dict=False,
+                                  guidance_scale=0,
+                                  output_type='latent')
+
             # latent, _ = self.pipe(prompt=self.positive_reverse_prompt, #  placeholder here, since cfg=0
             #                     num_inference_steps=self.num_inference_steps,
             #                     latents=init_latent,
@@ -212,8 +229,8 @@ class GaussCtrlPipeline(VanillaPipeline):
         # Set up ControlNet and AttnAlign
         self.pipe.scheduler = self.ddim_scheduler
         self.pipe.unet.set_attn_processor(
-                        processor=utils.CrossViewAttnProcessor(self_attn_coeff=0.6,
-                        unet_chunk_size=2))
+            processor=utils.CrossViewAttnProcessor(self_attn_coeff=0.6,
+                                                   unet_chunk_size=2))
         # self.pipe.controlnet.set_attn_processor(
         #                 processor=utils.CrossViewAttnProcessor(self_attn_coeff=0,
         #                 unet_chunk_size=2))
@@ -221,7 +238,9 @@ class GaussCtrlPipeline(VanillaPipeline):
 
         print("#############################")
         CONSOLE.print("Start Editing: ", style="bold yellow")
-        CONSOLE.print(f"Reference views are {[j+1 for j in self.ref_indices]}", style="bold yellow")
+        CONSOLE.print(
+            f"Reference views are {[j + 1 for j in self.ref_indices]}",
+            style="bold yellow")
         print("#############################")
         ref_disparity_list = []
         ref_z0_list = []
@@ -234,41 +253,55 @@ class GaussCtrlPipeline(VanillaPipeline):
 
         ref_disparities = np.concatenate(ref_disparity_list, axis=0)
         ref_z0s = np.concatenate(ref_z0_list, axis=0)
-        ref_disparity_torch = torch.from_numpy(ref_disparities.copy()).to(torch.float16).to(self.pipe_device)
-        ref_z0_torch = torch.from_numpy(ref_z0s.copy()).to(torch.float16).to(self.pipe_device)
+        ref_disparity_torch = torch.from_numpy(ref_disparities.copy()).to(
+            torch.float16).to(self.pipe_device)
+        ref_z0_torch = torch.from_numpy(ref_z0s.copy()).to(torch.float16).to(
+            self.pipe_device)
 
         # Edit images in chunk
         for idx in range(0, len(self.datamanager.train_data), self.chunk_size):
-            chunked_data = self.datamanager.train_data[idx: idx+self.chunk_size]
+            chunked_data = self.datamanager.train_data[
+                           idx: idx + self.chunk_size]
 
-            indices = [current_data['image_idx'] for current_data in chunked_data]
+            indices = [current_data['image_idx'] for current_data in
+                       chunked_data]
             # Build mask list aligned with chunked_data (None if missing)
-            mask_images = [current_data.get('mask_image', None) for current_data in chunked_data]
-            unedited_images = [current_data['unedited_image'] for current_data in chunked_data]
+            mask_images = [current_data.get('mask_image', None) for current_data
+                           in chunked_data]
+            unedited_images = [current_data['unedited_image'] for current_data
+                               in chunked_data]
             CONSOLE.print(f"Generating view: {indices}", style="bold yellow")
 
-            depth_images = [self.depth2disparity(current_data['depth_image']) for current_data in chunked_data]
+            depth_images = [self.depth2disparity(current_data['depth_image'])
+                            for current_data in chunked_data]
             disparities = np.concatenate(depth_images, axis=0)
-            disparities_torch = torch.from_numpy(disparities.copy()).to(torch.float16).to(self.pipe_device)
+            disparities_torch = torch.from_numpy(disparities.copy()).to(
+                torch.float16).to(self.pipe_device)
 
-            z_0_images = [current_data['z_0_image'] for current_data in chunked_data] # list of np array
+            z_0_images = [current_data['z_0_image'] for current_data in
+                          chunked_data]  # list of np array
             z0s = np.concatenate(z_0_images, axis=0)
-            latents_torch = torch.from_numpy(z0s.copy()).to(torch.float16).to(self.pipe_device)
+            latents_torch = torch.from_numpy(z0s.copy()).to(torch.float16).to(
+                self.pipe_device)
 
-            disp_ctrl_chunk = torch.concatenate((ref_disparity_torch, disparities_torch), dim=0)
-            latents_chunk = torch.concatenate((ref_z0_torch, latents_torch), dim=0)
+            disp_ctrl_chunk = torch.concatenate(
+                (ref_disparity_torch, disparities_torch), dim=0)
+            latents_chunk = torch.concatenate((ref_z0_torch, latents_torch),
+                                              dim=0)
 
             chunk_edited = self.pipe(
-                                prompt=[self.positive_prompt] * (self.num_ref_views+len(chunked_data)),
-                                negative_prompt=[self.negative_prompts] * (self.num_ref_views+len(chunked_data)),
-                                latents=latents_chunk,
-                                image=None,
-                                num_inference_steps=self.num_inference_steps,
-                                guidance_scale=self.guidance_scale,
-                                controlnet_conditioning_scale=self.controlnet_conditioning_scale,
-                                eta=self.eta,
-                                output_type='pt',
-                            ).images[self.num_ref_views:]
+                prompt=[self.positive_prompt] * (
+                            self.num_ref_views + len(chunked_data)),
+                negative_prompt=[self.negative_prompts] * (
+                            self.num_ref_views + len(chunked_data)),
+                latents=latents_chunk,
+                image=None,
+                num_inference_steps=self.num_inference_steps,
+                guidance_scale=self.guidance_scale,
+                controlnet_conditioning_scale=self.controlnet_conditioning_scale,
+                eta=self.eta,
+                output_type='pt',
+            ).images[self.num_ref_views:]
             # chunk_edited = self.pipe(
             #                     prompt=[self.positive_prompt] * (self.num_ref_views+len(chunked_data)),
             #                     negative_prompt=[self.negative_prompts] * (self.num_ref_views+len(chunked_data)),
@@ -297,20 +330,26 @@ class GaussCtrlPipeline(VanillaPipeline):
                     mask = mask.to(edited_image.dtype)
                     bg_mask = 1 - mask
 
-                    unedited_image = unedited_images[local_idx].permute(2,0,1)
-                    bg_cntrl_edited_image = edited_image * mask[None] + unedited_image * bg_mask[None]
+                    unedited_image = unedited_images[local_idx].permute(2, 0, 1)
+                    bg_cntrl_edited_image = edited_image * mask[
+                        None] + unedited_image * bg_mask[None]
 
                 # Save the diffusion edited image under the debug folder
                 debug_dir = os.path.join(
                     os.path.dirname(os.path.dirname(__file__)), 'debug')
                 os.makedirs(debug_dir, exist_ok=True)
-                edited_img_np = (bg_cntrl_edited_image.permute(1,2,0).cpu().numpy() * 255).astype(np.uint8)
+                edited_img_np = (bg_cntrl_edited_image.permute(1, 2,
+                                                               0).cpu().numpy() * 255).astype(
+                    np.uint8)
                 edited_img_pil = Image.fromarray(edited_img_np)
-                edited_img_filename = os.path.join(debug_dir, f'img_{global_idx:03d}_diffusion_edited.png')
+                edited_img_filename = os.path.join(debug_dir,
+                                                   f'img_{global_idx:03d}_diffusion_edited.png')
                 edited_img_pil.save(edited_img_filename)
 
                 # Update the edited image back to train data
-                self.datamanager.train_data[global_idx]["image"] = bg_cntrl_edited_image.permute(1,2,0).to(torch.float32) # [512 512 3]
+                self.datamanager.train_data[global_idx][
+                    "image"] = bg_cntrl_edited_image.permute(1, 2, 0).to(
+                    torch.float32)  # [512 512 3]
         print("#############################")
         CONSOLE.print("Done Editing", style="bold yellow")
         print("#############################")
@@ -319,7 +358,8 @@ class GaussCtrlPipeline(VanillaPipeline):
     def image2latent(self, image):
         """Encode images to latents"""
         image = image * 2 - 1
-        image = image.permute(2, 0, 1).unsqueeze(0) # torch.Size([1, 3, 512, 512]) -1~1
+        image = image.permute(2, 0, 1).unsqueeze(
+            0)  # torch.Size([1, 3, 512, 512]) -1~1
         latents = self.pipe.vae.encode(image)['latent_dist'].mean
         latents = latents * 0.18215
         return latents
@@ -330,8 +370,9 @@ class GaussCtrlPipeline(VanillaPipeline):
         Return: disparity
         """
         disparity = 1 / (depth + 1e-5)
-        disparity_map = disparity / np.max(disparity) # 0.00233~1
-        disparity_map = np.concatenate([disparity_map, disparity_map, disparity_map], axis=0)
+        disparity_map = disparity / np.max(disparity)  # 0.00233~1
+        disparity_map = np.concatenate(
+            [disparity_map, disparity_map, disparity_map], axis=0)
         return disparity_map[None]
 
     def depth2disparity_torch(self, depth):
@@ -340,15 +381,20 @@ class GaussCtrlPipeline(VanillaPipeline):
         Return: disparity
         """
         disparity = 1 / (depth + 1e-5)
-        disparity_map = disparity / torch.max(disparity) # 0.00233~1
-        disparity_map = torch.concatenate([disparity_map, disparity_map, disparity_map], dim=0)
+        disparity_map = disparity / torch.max(disparity)  # 0.00233~1
+        disparity_map = torch.concatenate(
+            [disparity_map, disparity_map, disparity_map], dim=0)
         return disparity_map[None]
 
     def update_datasets(self, cam_idx, unedited_image, depth, latent, mask):
         """Save mid results"""
         self.datamanager.train_data[cam_idx]["unedited_image"] = unedited_image
-        self.datamanager.train_data[cam_idx]["depth_image"] = depth.permute(2,0,1).cpu().to(torch.float32).numpy()
-        self.datamanager.train_data[cam_idx]["z_0_image"] = latent.cpu().to(torch.float32).numpy()
+        self.datamanager.train_data[cam_idx]["depth_image"] = depth.permute(2,
+                                                                            0,
+                                                                            1).cpu().to(
+            torch.float32).numpy()
+        self.datamanager.train_data[cam_idx]["z_0_image"] = latent.cpu().to(
+            torch.float32).numpy()
         if mask is not None:
             self.datamanager.train_data[cam_idx]["mask_image"] = mask
 
@@ -357,8 +403,9 @@ class GaussCtrlPipeline(VanillaPipeline):
         Args:
             step: current iteration step to update sampler if using DDP (distributed)
         """
-        ray_bundle, batch = self.datamanager.next_train(step) # camera, data
-        model_outputs = self._model(ray_bundle)  # train distributed data parallel model if world_size > 1
+        ray_bundle, batch = self.datamanager.next_train(step)  # camera, data
+        model_outputs = self._model(
+            ray_bundle)  # train distributed data parallel model if world_size > 1
 
         metrics_dict = self.model.get_metrics_dict(model_outputs, batch)
         loss_dict = self.model.get_loss_dict(model_outputs, batch, metrics_dict)
